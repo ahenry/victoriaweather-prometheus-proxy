@@ -6,4 +6,6 @@ authors = ["Austin Henry <ahenry@twocanoe.ca>"]
 [dependencies]
 metrics = "^0.2"
 hyper = "^0.9"
-xml-rs = "^0.3"
+serde = "^0.8"
+serde_derive = "^0.8"
+serde_xml = "^0.9"
