@@ -1,0 +1,9 @@
+[package]
+name = "victoriaweather-prometheus-proxy"
+version = "0.1.0"
+authors = ["Austin Henry <ahenry@twocanoe.ca>"]
+
+[dependencies]
+metrics = "^0.2"
+hyper = "^0.9"
+xml-rs = "^0.3"
