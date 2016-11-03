@@ -4,7 +4,8 @@ version = "0.1.0"
 authors = ["Austin Henry <ahenry@twocanoe.ca>"]
 
 [dependencies]
-metrics = "^0.2"
+clap = "2"
+prometheus = "^0.2"
 hyper = "^0.9"
 serde = "^0.8"
 serde_derive = "^0.8"
