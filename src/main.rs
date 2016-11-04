@@ -1,5 +1,8 @@
 #![feature(proc_macro)]
+#![recursion_limit = "1024"]
 
+#[macro_use]
+extern crate error_chain;
 extern crate clap;
 extern crate hyper;
 #[macro_use]
@@ -8,6 +11,9 @@ extern crate prometheus;
 extern crate serde_derive;
 extern crate serde;
 extern crate serde_xml;
+#[macro_use]
+extern crate log;
+extern crate env_logger;
 
 use clap::{Arg, App};
 use hyper::client::{Client, IntoUrl};
@@ -15,9 +21,11 @@ use hyper::header::{ContentLength, ContentType};
 use hyper::server::{Server, Request, Response};
 use hyper::status::StatusCode;
 use hyper::mime::Mime;
+use prometheus::{Gauge, Encoder, TextEncoder};
 use std::io::Read;
 
-use prometheus::{Gauge, Encoder, TextEncoder};
+mod errors;
+use errors::*;
 
 #[derive(Debug, Deserialize)]
 #[allow(non_camel_case_types)]
@@ -43,32 +51,33 @@ struct current_observation {
     insolation_predicted_units: String,
 }
 
-#[allow(dead_code)]
-fn get_current_conditions<U: IntoUrl>(url: U) -> Option<current_observation> {
-    let mut res = Client::new().get(url).send().unwrap();
+fn get_current_conditions<U: IntoUrl>(url: U) -> Result<current_observation> {
+    let mut res = try!(Client::new().get(url).send());
 
-    if res.status == hyper::Ok {
-        if let Some(&ContentLength(length)) = res.headers.get() {
-            let mut content = String::with_capacity(length as usize);
-            let _ = res.read_to_string(&mut content);
-            let readings: current_observation = serde_xml::from_str(&content).unwrap();
-            return Some(readings);
-        }
+    match res.status {
+        hyper::Ok => {
+            let mut content = match res.headers.get::<ContentLength>() {
+                Some(&ContentLength(length)) => String::with_capacity(length as usize),
+                None => String::new(),
+            };
+
+            try!(res.read_to_string(&mut content));
+            let readings: current_observation = try!(serde_xml::from_str(&content));
+            Ok(readings)
+        },
+        _ => Err("Something happened XXX".into()),
     }
-
-    None
 }
 
-fn is_int(v: String) -> Result<(), String> {
-    if v.parse::<u16>().is_ok() {
-        return Ok(());
+fn parse_port(v: String) -> std::result::Result<(), String> {
+    match v.parse::<u16>() {
+        Ok(_) => Ok(()),
+        Err(_) => Err("listen_port needs to be an integer between 1 - 65535".into()),
     }
-
-    Err(String::from("The value needs to be a positive integer less than 65535"))
 }
 
-fn main() {
-    let matches = App::new("Victoria Weather Prometheus Exporter")
+fn parse_args<'a>() -> clap::ArgMatches<'a> {
+    App::new("Victoria Weather Prometheus Exporter")
         .version("0.1")
         .author("Austin Henry <ahenry@twocanoe.ca>")
         .about("Does what you'd expect from the name")
@@ -78,17 +87,23 @@ fn main() {
             .help("Which port to listen on")
             .takes_value(true)
             .default_value("9189")
-            .validator(is_int))
+            .validator(parse_port))
         .arg(Arg::with_name("location")
             .short("l")
             .long("location")
             .help("The short name of the victoria weather station to use")
             .takes_value(true)
             .required(true))
-        .get_matches();
+        .get_matches()
+}
 
+fn main() {
+    let matches = parse_args();
     let port = matches.value_of("port").unwrap().parse::<u16>().unwrap();
     let location = matches.value_of("location").unwrap();
+
+    env_logger::init().unwrap();
+
     let url = format!("http://www.victoriaweather.ca/stations/{}/current.xml", location);
     /*
     let readings = current_observation {
@@ -125,29 +140,44 @@ fn main() {
     let insolation: Gauge =
         register_gauge!("thermostat_insolation",
                         "The insolation in degrees W/m2 at the location",
-                        labels!{"location" => location,})
+                        labels!{"location" => location,
+                                "type" => "measured",})
+            .unwrap();
+
+    let predicted_insolation: Gauge =
+        register_gauge!("thermostat_insolation",
+                        "The insolation in degrees W/m2 at the location",
+                        labels!{"location" => location,
+                                "type" => "predicted",})
             .unwrap();
 
     let encoder = TextEncoder::new();
-    println!("listening addr 127.0.0.1:{}", port);
+    info!("listening addr 127.0.0.1:{}", port);
     Server::http(("127.0.0.1", port))
         .unwrap()
         .handle(move |_: Request, mut res: Response| {
-            if let Some(readings) = get_current_conditions(&url) {
-                temperature.set(readings.temperature);
-                humidity.set(readings.humidity);
-                insolation.set(readings.insolation);
+            match get_current_conditions(&url) {
+                Ok(readings) => {
+                    temperature.set(readings.temperature);
+                    humidity.set(readings.humidity);
+                    insolation.set(readings.insolation);
+                    predicted_insolation.set(readings.insolation_predicted);
 
-                let metric_familys = prometheus::gather();
-                let mut buffer = vec![];
-                encoder.encode(&metric_familys, &mut buffer).unwrap();
-                res.headers_mut()
-                    .set(ContentType(encoder.format_type().parse::<Mime>().unwrap()));
-                res.send(&buffer).unwrap();
-            } else {
-                *res.status_mut() = StatusCode::BadGateway;
+                    let metric_familys = prometheus::gather();
+                    let mut buffer = vec![];
+                    encoder.encode(&metric_familys, &mut buffer).unwrap();
+
+                    res.headers_mut().set(ContentType(encoder.format_type().parse::<Mime>().unwrap()));
+                    res.send(&buffer).unwrap();
+                },
+                Err(e) => {
+                    let msg = format!("Something possibly horrible happened: {:?}", e);
+                    error!("{}", msg);
+
+                    *res.status_mut() = StatusCode::BadGateway;
+                    res.send(msg.as_bytes()).unwrap();
+                }
             }
-
         })
         .unwrap();
 }
