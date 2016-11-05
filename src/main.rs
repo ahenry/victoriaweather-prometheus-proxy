@@ -105,25 +105,6 @@ fn main() {
     env_logger::init().unwrap();
 
     let url = format!("http://www.victoriaweather.ca/stations/{}/current.xml", location);
-    /*
-    let readings = current_observation {
-        station_long_name: "Lighthouse Christian Academy".into(),
-        station_name: "Lighthouse".into(),
-        station_id: "169".into(),
-        observation_time: "2016/11/02, 15:21".into(),
-        timezone: "Pacific".into(),
-        temperature: 11.8,
-        temperature_low: 9.3,
-        temperature_high: 11.8,
-        temperature_units: "C".into(),
-        humidity: 97.0,
-        humidity_units: "%".into(),
-        insolation: 100.0,
-        insolation_units: "W/m2".into(),
-        insolation_predicted: 290.0,
-        insolation_predicted_units: "W/m2".into(),
-    };
-    */
 
     let temperature: Gauge =
         register_gauge!("thermostat_temperature",
@@ -152,9 +133,12 @@ fn main() {
             .unwrap();
 
     let encoder = TextEncoder::new();
+    let content_type = ContentType(encoder.format_type().parse::<Mime>()
+                                   .expect("Couldn't generate a ContentType Header"));
+
     info!("listening addr 127.0.0.1:{}", port);
     Server::http(("127.0.0.1", port))
-        .unwrap()
+        .expect("Could not create server")
         .handle(move |_: Request, mut res: Response| {
             match get_current_conditions(&url) {
                 Ok(readings) => {
@@ -163,21 +147,29 @@ fn main() {
                     insolation.set(readings.insolation);
                     predicted_insolation.set(readings.insolation_predicted);
 
+                    debug!("Readings at {}/{}: Temperature {}{} Humidity {}{} Insolation {}{}",
+                           readings.station_name, readings.observation_time, readings.temperature,
+                           readings.temperature_units, readings.humidity, readings.humidity_units,
+                           readings.insolation, readings.insolation_units);
+
                     let metric_familys = prometheus::gather();
                     let mut buffer = vec![];
-                    encoder.encode(&metric_familys, &mut buffer).unwrap();
-
-                    res.headers_mut().set(ContentType(encoder.format_type().parse::<Mime>().unwrap()));
-                    res.send(&buffer).unwrap();
+                    match encoder.encode(&metric_familys, &mut buffer) {
+                        Err(e) => error!("Couldn't encode metrics: {}", e),
+                        Ok(()) => {
+                            res.headers_mut().set(content_type.clone());
+                            res.send(&buffer).ok(); // don't really care if we fail to send
+                        },
+                    }
                 },
                 Err(e) => {
                     let msg = format!("Something possibly horrible happened: {:?}", e);
                     error!("{}", msg);
 
                     *res.status_mut() = StatusCode::BadGateway;
-                    res.send(msg.as_bytes()).unwrap();
+                    res.send(msg.as_bytes()).ok(); // don't really care if we fail to send
                 }
             }
         })
-        .unwrap();
+        .ok();
 }
