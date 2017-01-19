@@ -1,4 +1,3 @@
-#![feature(proc_macro)]
 #![recursion_limit = "1024"]
 
 #[macro_use]
@@ -52,7 +51,7 @@ struct current_observation {
 }
 
 fn get_current_conditions<U: IntoUrl>(url: U) -> Result<current_observation> {
-    let mut res = try!(Client::new().get(url).send());
+    let mut res = Client::new().get(url).send()?;
 
     match res.status {
         hyper::Ok => {
@@ -61,8 +60,8 @@ fn get_current_conditions<U: IntoUrl>(url: U) -> Result<current_observation> {
                 None => String::new(),
             };
 
-            try!(res.read_to_string(&mut content));
-            let readings: current_observation = try!(serde_xml::from_str(&content));
+            res.read_to_string(&mut content)?;
+            let readings: current_observation = serde_xml::from_str(&content)?;
             Ok(readings)
         },
         _ => Err("Something happened XXX".into()),
@@ -106,31 +105,27 @@ fn main() {
 
     let url = format!("http://www.victoriaweather.ca/stations/{}/current.xml", location);
 
-    let temperature: Gauge =
-        register_gauge!("thermostat_temperature",
+    let opts = opts!("thermostat_temperature",
                         "The temperature in degrees C at the location",
-                        labels!{"location" => location,})
-            .unwrap();
+                        labels!{"location" => location,});
+    let temperature: Gauge = register_gauge!(opts).unwrap();
 
-    let humidity: Gauge =
-        register_gauge!("thermostat_humidity",
+    let opts = opts!("thermostat_humidity",
                         "The humidity in % at the location",
-                        labels!{"location" => location,})
-            .unwrap();
+                        labels!{"location" => location,});
+    let humidity: Gauge = register_gauge!(opts).unwrap();
 
-    let insolation: Gauge =
-        register_gauge!("thermostat_insolation",
+    let opts = opts!("thermostat_insolation",
                         "The insolation in degrees W/m2 at the location",
                         labels!{"location" => location,
-                                "type" => "measured",})
-            .unwrap();
+                                "type" => "measured",});
+    let insolation: Gauge = register_gauge!(opts).unwrap();
 
-    let predicted_insolation: Gauge =
-        register_gauge!("thermostat_insolation",
+    let opts = opts!("thermostat_insolation",
                         "The insolation in degrees W/m2 at the location",
                         labels!{"location" => location,
-                                "type" => "predicted",})
-            .unwrap();
+                                "type" => "predicted",});
+    let predicted_insolation: Gauge = register_gauge!(opts).unwrap();
 
     let encoder = TextEncoder::new();
     let content_type = ContentType(encoder.format_type().parse::<Mime>()
@@ -152,9 +147,9 @@ fn main() {
                            readings.temperature_units, readings.humidity, readings.humidity_units,
                            readings.insolation, readings.insolation_units);
 
-                    let metric_familys = prometheus::gather();
+                    let metric_families = prometheus::gather();
                     let mut buffer = vec![];
-                    match encoder.encode(&metric_familys, &mut buffer) {
+                    match encoder.encode(&metric_families, &mut buffer) {
                         Err(e) => error!("Couldn't encode metrics: {}", e),
                         Ok(()) => {
                             res.headers_mut().set(content_type.clone());
